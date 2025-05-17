@@ -296,3 +296,98 @@
     (unwrap-panic (mul-div borrowed-amount interest-per-block blocks-passed))
   )
 )
+
+;; Update accumulated interest for a vault
+(define-private (update-interest (vault-data {
+  collateral-amount: uint,
+  borrowed-amount: uint,
+  interest-accumulated: uint,
+  last-interest-update: uint,
+}))
+  (let (
+      (blocks-passed (- stacks-block-height (get last-interest-update vault-data)))
+      (new-interest (calculate-interest (get borrowed-amount vault-data) blocks-passed))
+    )
+    {
+      collateral-amount: (get collateral-amount vault-data),
+      borrowed-amount: (get borrowed-amount vault-data),
+      interest-accumulated: (+ (get interest-accumulated vault-data) new-interest),
+      last-interest-update: stacks-block-height,
+    }
+  )
+)
+
+;; Check if a vault is undercollateralized
+(define-private (is-undercollateralized (vault-data {
+  collateral-amount: uint,
+  borrowed-amount: uint,
+  interest-accumulated: uint,
+  last-interest-update: uint,
+}))
+  (let (
+      (collateral-value-result (calculate-collateral-value (get collateral-amount vault-data)))
+      (total-debt (+ (get borrowed-amount vault-data) (get interest-accumulated vault-data)))
+    )
+    (if (is-err collateral-value-result)
+      true ;; If oracle error, consider vault at risk
+      (let (
+          (collateral-value (unwrap-panic collateral-value-result))
+          (min-collateral-needed-result (mul-div total-debt (var-get liquidation-threshold) u100))
+        )
+        (if (is-err min-collateral-needed-result)
+          true ;; If calculation error, consider vault at risk
+          (< collateral-value (unwrap-panic min-collateral-needed-result))
+        )
+      )
+    )
+  )
+)
+
+;; Borrowing and Repayment Functions
+
+;; Borrow stablecoins against BTC collateral
+(define-public (borrow (amount-to-borrow uint))
+  (let (
+      (user tx-sender)
+      (vault-data-option (map-get? vaults { owner: user }))
+    )
+    (begin
+      (try! (assert-not-paused))
+      (asserts! (> amount-to-borrow u0) ERR_INVALID_AMOUNT)
+      (asserts! (is-some vault-data-option) ERR_VAULT_NOT_FOUND)
+      (let (
+          (vault-data (unwrap-panic vault-data-option))
+          (updated-vault (update-interest vault-data))
+        )
+        ;; Check borrowing limit
+        (let (
+            (max-borrow-result (calculate-max-borrow-amount (get collateral-amount updated-vault)))
+            (total-debt (+ (get borrowed-amount updated-vault)
+              (get interest-accumulated updated-vault)
+            ))
+          )
+          (if (is-err max-borrow-result)
+            max-borrow-result
+            (let ((max-borrow (unwrap-panic max-borrow-result)))
+              (asserts! (<= (+ amount-to-borrow total-debt) max-borrow)
+                ERR_BORROW_LIMIT_EXCEEDED
+              )
+              ;; Update vault
+              (map-set vaults { owner: user } {
+                collateral-amount: (get collateral-amount updated-vault),
+                borrowed-amount: (+ (get borrowed-amount updated-vault) amount-to-borrow),
+                interest-accumulated: (get interest-accumulated updated-vault),
+                last-interest-update: stacks-block-height,
+              })
+              ;; Update total borrowed
+              (var-set total-borrowed
+                (+ (var-get total-borrowed) amount-to-borrow)
+              )
+              (ok amount-to-borrow)
+            )
+          )
+        )
+      )
+    )
+  )
+)
