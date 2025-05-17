@@ -447,3 +447,79 @@
     )
   )
 )
+
+;; Collateral Management Functions
+
+;; Withdraw BTC collateral
+(define-public (withdraw-collateral (amount-to-withdraw uint))
+  (let (
+      (user tx-sender)
+      (vault-data-option (map-get? vaults { owner: user }))
+    )
+    (begin
+      (try! (assert-not-paused))
+      (asserts! (> amount-to-withdraw u0) ERR_INVALID_AMOUNT)
+      (asserts! (is-some vault-data-option) ERR_VAULT_NOT_FOUND)
+      (let (
+          (vault-data (unwrap-panic vault-data-option))
+          (updated-vault (update-interest vault-data))
+        )
+        ;; Check if withdrawal would leave enough collateral
+        (asserts! (<= amount-to-withdraw (get collateral-amount updated-vault))
+          ERR_INSUFFICIENT_COLLATERAL
+        )
+        (let (
+            (new-collateral-amount (- (get collateral-amount updated-vault) amount-to-withdraw))
+            (total-debt (+ (get borrowed-amount updated-vault)
+              (get interest-accumulated updated-vault)
+            ))
+          )
+          ;; If there's outstanding debt, check collateralization ratio
+          (if (> total-debt u0)
+            (let ((collateral-value-result (calculate-collateral-value new-collateral-amount)))
+              (if (is-err collateral-value-result)
+                collateral-value-result
+                (let (
+                    (new-collateral-value (unwrap-panic collateral-value-result))
+                    (min-collateral-needed (mul-div total-debt (var-get minimum-collateral-ratio) u100))
+                  )
+                  (asserts!
+                    (>= new-collateral-value (unwrap-panic min-collateral-needed))
+                    ERR_MINIMUM_COLLATERAL_RATIO
+                  )
+                  ;; Update vault
+                  (map-set vaults { owner: user } {
+                    collateral-amount: new-collateral-amount,
+                    borrowed-amount: (get borrowed-amount updated-vault),
+                    interest-accumulated: (get interest-accumulated updated-vault),
+                    last-interest-update: stacks-block-height,
+                  })
+                  ;; Update total collateral
+                  (var-set total-collateral
+                    (- (var-get total-collateral) amount-to-withdraw)
+                  )
+                  (ok amount-to-withdraw)
+                )
+              )
+            )
+            ;; If no debt, allow full withdrawal
+            (begin
+              ;; Update vault
+              (map-set vaults { owner: user } {
+                collateral-amount: new-collateral-amount,
+                borrowed-amount: u0,
+                interest-accumulated: u0,
+                last-interest-update: stacks-block-height,
+              })
+              ;; Update total collateral
+              (var-set total-collateral
+                (- (var-get total-collateral) amount-to-withdraw)
+              )
+              (ok amount-to-withdraw)
+            )
+          )
+        )
+      )
+    )
+  )
+)
