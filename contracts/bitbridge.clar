@@ -391,3 +391,59 @@
     )
   )
 )
+
+;; Repay borrowed funds with interest
+(define-public (repay (amount-to-repay uint))
+  (let (
+      (user tx-sender)
+      (vault-data-option (map-get? vaults { owner: user }))
+    )
+    (begin
+      (try! (assert-not-paused))
+      (asserts! (> amount-to-repay u0) ERR_INVALID_AMOUNT)
+      (asserts! (is-some vault-data-option) ERR_VAULT_NOT_FOUND)
+      (let (
+          (vault-data (unwrap-panic vault-data-option))
+          (updated-vault (update-interest vault-data))
+        )
+        (let ((total-debt (+ (get borrowed-amount updated-vault)
+            (get interest-accumulated updated-vault)
+          )))
+          ;; Ensure repayment amount doesn't exceed debt
+          (let ((effective-repayment (if (> amount-to-repay total-debt)
+              total-debt
+              amount-to-repay
+            )))
+            ;; Calculate how much goes to interest vs principal
+            (let (
+                (interest-payment (if (> (get interest-accumulated updated-vault) effective-repayment)
+                  effective-repayment
+                  (get interest-accumulated updated-vault)
+                ))
+                (principal-payment (- effective-repayment interest-payment))
+              )
+              ;; Calculate protocol fee
+              (let ((fee-amount (mul-div interest-payment (var-get protocol-fee-rate) u100)))
+                ;; Update protocol statistics
+                (var-set total-fees-collected
+                  (+ (var-get total-fees-collected) (unwrap-panic fee-amount))
+                )
+                (var-set total-borrowed
+                  (- (var-get total-borrowed) principal-payment)
+                )
+                ;; Update vault
+                (map-set vaults { owner: user } {
+                  collateral-amount: (get collateral-amount updated-vault),
+                  borrowed-amount: (- (get borrowed-amount updated-vault) principal-payment),
+                  interest-accumulated: (- (get interest-accumulated updated-vault) interest-payment),
+                  last-interest-update: stacks-block-height,
+                })
+                (ok effective-repayment)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
