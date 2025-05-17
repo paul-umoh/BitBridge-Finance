@@ -649,3 +649,83 @@
     )
   )
 )
+
+;; Read-Only Functions
+
+;; Get vault information
+(define-read-only (get-vault-info (owner principal))
+  (let ((vault-data-option (map-get? vaults { owner: owner })))
+    (if (is-some vault-data-option)
+      (let (
+          (vault-data (unwrap-panic vault-data-option))
+          (updated-vault (update-interest vault-data))
+        )
+        (ok {
+          collateral-amount: (get collateral-amount updated-vault),
+          borrowed-amount: (get borrowed-amount updated-vault),
+          interest-accumulated: (get interest-accumulated updated-vault),
+          last-interest-update: (get last-interest-update updated-vault),
+          total-debt: (+ (get borrowed-amount updated-vault)
+            (get interest-accumulated updated-vault)
+          ),
+        })
+      )
+      ERR_VAULT_NOT_FOUND
+    )
+  )
+)
+
+;; Get vault health (collateral ratio)
+(define-read-only (get-vault-health (owner principal))
+  (let ((vault-data-option (map-get? vaults { owner: owner })))
+    (if (is-some vault-data-option)
+      (let (
+          (vault-data (unwrap-panic vault-data-option))
+          (updated-vault (update-interest vault-data))
+        )
+        (let (
+            (collateral-value-result (calculate-collateral-value (get collateral-amount updated-vault)))
+            (total-debt (+ (get borrowed-amount updated-vault)
+              (get interest-accumulated updated-vault)
+            ))
+          )
+          (if (is-err collateral-value-result)
+            collateral-value-result
+            (let ((collateral-value (unwrap-panic collateral-value-result)))
+              (if (is-eq total-debt u0)
+                (ok u0) ;; No debt = no collateral ratio to calculate
+                (mul-div collateral-value u100 total-debt) ;; Collateral ratio in percentage
+              )
+            )
+          )
+        )
+      )
+      ERR_VAULT_NOT_FOUND
+    )
+  )
+)
+
+;; Get protocol statistics
+(define-read-only (get-protocol-stats)
+  (ok {
+    total-collateral: (var-get total-collateral),
+    total-borrowed: (var-get total-borrowed),
+    total-fees-collected: (var-get total-fees-collected),
+    minimum-collateral-ratio: (var-get minimum-collateral-ratio),
+    liquidation-threshold: (var-get liquidation-threshold),
+    liquidation-penalty: (var-get liquidation-penalty),
+    borrow-interest-rate: (var-get borrow-interest-rate),
+    protocol-fee-rate: (var-get protocol-fee-rate),
+    protocol-paused: (var-get protocol-paused),
+  })
+)
+
+;; Initialization
+
+;; Initialize contract
+(define-private (initialize)
+  (begin
+    (map-set protocol-reserves { asset: "stablecoin" } { amount: u0 })
+    true
+  )
+)
