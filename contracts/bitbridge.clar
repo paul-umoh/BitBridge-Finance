@@ -77,3 +77,80 @@
     last-interest-update: uint, ;; Block height of last interest calculation
   }
 )
+
+;; Protocol Reserve Assets
+(define-map protocol-reserves
+  { asset: (string-ascii 10) }
+  { amount: uint }
+)
+
+;; Governance Token Balances
+(define-map governance-token-balances
+  { owner: principal }
+  { balance: uint }
+)
+
+;; Authorization and Security Functions
+
+;; Check if caller is contract owner
+(define-private (is-contract-owner)
+  (is-eq tx-sender (var-get contract-owner))
+)
+
+;; Check if caller is authorized oracle provider
+(define-private (is-authorized-oracle)
+  ;; Production implementation would use a whitelist
+  (is-eq tx-sender (var-get contract-owner))
+)
+
+;; Check if protocol is active (not paused)
+(define-private (assert-not-paused)
+  (ok (asserts! (not (var-get protocol-paused)) ERR_PROTOCOL_PAUSED))
+)
+
+;; Mathematical Helper Functions
+
+;; Safe multiplication and division
+;; a * b / c with overflow protection
+(define-private (mul-div
+    (a uint)
+    (b uint)
+    (c uint)
+  )
+  (begin
+    (asserts! (> c u0) ERR_INVALID_AMOUNT)
+    (ok (/ (* a b) c))
+  )
+)
+
+;; Oracle Price Feed Functions
+
+;; Update BTC price from authorized oracle
+(define-public (update-btc-price (new-price uint))
+  (begin
+    (asserts! (is-authorized-oracle) ERR_UNAUTHORIZED)
+    (asserts! (> new-price u0) ERR_INVALID_AMOUNT)
+    (asserts! (< new-price u10000000000) ERR_INVALID_AMOUNT) ;; $100,000 per BTC ceiling
+    (var-set btc-price-in-usd new-price)
+    (var-set btc-price-last-updated stacks-block-height)
+    (ok new-price)
+  )
+)
+
+;; Retrieve current BTC price, ensuring it's fresh
+(define-private (get-btc-price)
+  (let (
+      (current-price (var-get btc-price-in-usd))
+      (last-updated (var-get btc-price-last-updated))
+    )
+    (if (or
+        (is-eq current-price u0)
+        (> (- stacks-block-height last-updated)
+          (var-get oracle-price-validity-period)
+        )
+      )
+      ERR_ORACLE_ERROR
+      (ok current-price)
+    )
+  )
+)
