@@ -229,3 +229,70 @@
     (ok (var-get protocol-paused))
   )
 )
+
+;; Vault Management Functions
+
+;; Deposit BTC collateral
+(define-public (deposit-collateral (btc-amount uint))
+  (let (
+      (user tx-sender)
+      (vault-data (map-get? vaults { owner: user }))
+    )
+    (begin
+      (try! (assert-not-paused))
+      (asserts! (> btc-amount u0) ERR_INVALID_AMOUNT)
+      ;; Create or update vault
+      (if (is-some vault-data)
+        (let ((existing-vault (unwrap-panic vault-data)))
+          (map-set vaults { owner: user } {
+            collateral-amount: (+ (get collateral-amount existing-vault) btc-amount),
+            borrowed-amount: (get borrowed-amount existing-vault),
+            interest-accumulated: (get interest-accumulated existing-vault),
+            last-interest-update: (get last-interest-update existing-vault),
+          })
+        )
+        (map-set vaults { owner: user } {
+          collateral-amount: btc-amount,
+          borrowed-amount: u0,
+          interest-accumulated: u0,
+          last-interest-update: stacks-block-height,
+        })
+      )
+      ;; Update total collateral
+      (var-set total-collateral (+ (var-get total-collateral) btc-amount))
+      (ok btc-amount)
+    )
+  )
+)
+
+;; Calculate collateral value in USD cents
+(define-private (calculate-collateral-value (btc-amount uint))
+  (let ((btc-price (get-btc-price)))
+    (if (is-err btc-price)
+      btc-price
+      (mul-div btc-amount (unwrap-panic btc-price) u100000000) ;; Convert satoshis to BTC and multiply by price
+    )
+  )
+)
+
+;; Calculate maximum borrowable amount based on collateral
+(define-private (calculate-max-borrow-amount (collateral-amount uint))
+  (let ((collateral-value-result (calculate-collateral-value collateral-amount)))
+    (if (is-err collateral-value-result)
+      collateral-value-result
+      (let ((collateral-value (unwrap-panic collateral-value-result)))
+        (mul-div collateral-value u100 (var-get minimum-collateral-ratio))
+      )
+    )
+  )
+)
+
+;; Calculate interest for a given period
+(define-private (calculate-interest
+    (borrowed-amount uint)
+    (blocks-passed uint)
+  )
+  (let ((interest-per-block (/ (var-get borrow-interest-rate) u52560)))
+    (unwrap-panic (mul-div borrowed-amount interest-per-block blocks-passed))
+  )
+)
